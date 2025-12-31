@@ -30,6 +30,7 @@ class MSNAdapter(LiveFeedAdapter):
 
     async def start(self):
         self._running = True
+        allow_scrape = bool(self.config.get('allow_scrape', os.getenv('ALLOW_SCRAPE_MSN', 'false').lower() in ('1','true','yes')))
         while self._running:
             try:
                 self._pick_user_agent()
@@ -38,13 +39,30 @@ class MSNAdapter(LiveFeedAdapter):
                 if r.status_code == 200:
                     # Attempt to parse JSON if content-type says so
                     ct = r.headers.get('content-type', '')
+                    events = []
                     if 'application/json' in ct:
                         payload = r.json()
                         events = payload.get('events', []) if isinstance(payload, dict) else []
+                        self.mark_healthy()
                     else:
-                        # Parse HTML and try to extract score blocks
-                        soup = BeautifulSoup(r.text, 'html.parser')
-                        events = self._parse_html_for_events(soup)
+                        if not allow_scrape:
+                            LOG.warning('msn_adapter received HTML but scraping is disabled; set ALLOW_SCRAPE_MSN to enable')
+                            self.mark_unhealthy()
+                            await self._sleep_with_jitter()
+                            continue
+                        # Parse HTML and try to extract JSON blobs for events
+                        json_blobs = self._extract_json_from_html(r.text)
+                        for blob in json_blobs:
+                            if isinstance(blob, dict) and blob.get('events'):
+                                events.extend(blob.get('events'))
+                            elif isinstance(blob, list):
+                                events.extend(blob)
+                        # fallback to simple HTML heuristics too
+                        events.extend(self._parse_html_for_events(BeautifulSoup(r.text, 'html.parser')))
+                        if events:
+                            self.mark_healthy()
+                        else:
+                            self.mark_unhealthy()
                     for raw in events:
                         evt = None
                         try:
@@ -53,7 +71,6 @@ class MSNAdapter(LiveFeedAdapter):
                             LOG.exception('msn_adapter normalization error: %s', e)
                         if evt:
                             self._validate_and_emit(evt)
-                        self.mark_healthy()
                 else:
                     LOG.warning('msn_adapter got status %s', r.status_code)
                     self.mark_unhealthy()
@@ -69,16 +86,61 @@ class MSNAdapter(LiveFeedAdapter):
         # Best-effort parser: find matches or score items and produce simplified event dicts
         events = []
         # Example: look for elements with data attributes or score blocks
-        for card in soup.select('.card, .match-card'):
+        for card in soup.select('.card, .match-card, .score-block'):
             try:
                 text = card.get_text(separator=' ', strip=True)
                 # Simple heuristic: skip if it doesn't look like a live ball
-                if 'over' in text.lower() or 'run' in text.lower():
+                if 'over' in text.lower() or 'run' in text.lower() or 'wicket' in text.lower():
                     # This is a simplification; real parsing would be more detailed
                     events.append({'match_id': card.get('id') or 'msn', 'timestamp': None, 'raw_text': text})
             except Exception:
                 continue
         return events
+
+    def _extract_json_from_html(self, html: str):
+        """Try to extract embedded JSON blobs from MSN pages.
+
+        Strategies:
+        - Look for <script type="application/ld+json"> blocks and parse their JSON
+        - Search for JS assignment patterns like `window.__DATA__ = {...}` or `initialState = {...}`
+        Returns list of parsed JSON objects (dict or list)
+        """
+        import re
+        import json
+        blobs = []
+        # parse type=application/ld+json
+        try:
+            soup = BeautifulSoup(html, 'html.parser')
+            for tag in soup.find_all('script', type='application/ld+json'):
+                try:
+                    parsed = json.loads(tag.string)
+                    blobs.append(parsed)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # search for JS assignment patterns
+        patterns = [r'window\.__INITIAL_STATE__\s*=\s*(\{.*?\});', r'window\.__DATA__\s*=\s*(\{.*?\});', r'initialState\s*=\s*(\{.*?\});']
+        for pat in patterns:
+            try:
+                m = re.search(pat, html, flags=re.S)
+                if m:
+                    j = m.group(1)
+                    try:
+                        parsed = json.loads(j)
+                        blobs.append(parsed)
+                    except Exception:
+                        # try to fix trailing semicolon or JS-style object
+                        try:
+                            j2 = j.rstrip(';')
+                            parsed = json.loads(j2)
+                            blobs.append(parsed)
+                        except Exception:
+                            continue
+            except Exception:
+                continue
+        return blobs
 
     def on_event(self, data: dict) -> Optional[dict]:
         # Try to normalize minimal information. If it's just raw_text, skip emitting as Event

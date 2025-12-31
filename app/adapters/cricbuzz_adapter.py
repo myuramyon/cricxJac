@@ -42,7 +42,7 @@ class CricbuzzAdapter(LiveFeedAdapter):
                         ct = r.headers.get('content-type', '')
                         if 'application/json' in ct:
                             payload = r.json()
-                            events = payload.get('events') or payload.get('data') or []
+                            events = payload.get('events') or payload.get('data') or payload.get('matches') or []
                             for raw in events:
                                 try:
                                     evt = self.on_event(raw)
@@ -52,8 +52,37 @@ class CricbuzzAdapter(LiveFeedAdapter):
                                     LOG.exception('cricbuzz_adapter on_event error: %s', e)
                             self.mark_healthy()
                         else:
-                            LOG.warning('cricbuzz_adapter: non-json response, skipping')
-                            self.mark_unhealthy()
+                            # HTML response: attempt extraction if allowed
+                            allow_scrape = bool(self.config.get('allow_scrape', os.getenv('ALLOW_SCRAPE_CRICBUZZ', 'false').lower() in ('1','true','yes')))
+                            if not allow_scrape:
+                                LOG.warning('cricbuzz_adapter received HTML but scraping disabled; set ALLOW_SCRAPE_CRICBUZZ to enable')
+                                self.mark_unhealthy()
+                                await self._sleep_with_jitter()
+                                continue
+                            # attempt to extract JSON from script tags
+                            # Use helper to extract JSON blobs from HTML
+                            # Use helper to extract JSON blobs from HTML
+                            from .cricbuzz_adapter_helpers import extract_json_from_html
+                            snippets = extract_json_from_html(r.text)
+                            events = []
+                            for s in snippets:
+                                if isinstance(s, dict) and s.get('events'):
+                                    events.extend(s.get('events'))
+                                elif isinstance(s, list):
+                                    events.extend(s)
+                            # fallback parse for simple HTML
+                            if not events:
+                                LOG.warning('cricbuzz_adapter: no events found in HTML after extraction')
+                                self.mark_unhealthy()
+                            else:
+                                for raw in events:
+                                    try:
+                                        evt = self.on_event(raw)
+                                        if evt:
+                                            self._validate_and_emit(evt)
+                                    except Exception as e:
+                                        LOG.exception('cricbuzz_adapter on_event error: %s', e)
+                                self.mark_healthy()
                     else:
                         LOG.warning('cricbuzz_adapter: bad status %s', r.status_code)
                         self.mark_unhealthy()
@@ -68,14 +97,15 @@ class CricbuzzAdapter(LiveFeedAdapter):
     def on_event(self, data: dict) -> Optional[dict]:
         # Map likely keys from cricbuzz/ekamid feed into our Event schema
         try:
-            match_id = data.get('match_id') or data.get('mid') or data.get('match')
-            timestamp = data.get('timestamp') or data.get('time')
-            inning = int(data.get('inning', 1))
+            match_id = data.get('match_id') or data.get('mid') or data.get('match') or data.get('match_id_str')
+            timestamp = data.get('timestamp') or data.get('time') or data.get('utc')
+            inning = int(data.get('inning', data.get('inning_number', 1)))
             over = int(data.get('over', data.get('over_num', 0)))
             ball = int(data.get('ball', data.get('ball_num', 1)))
-            batsman = data.get('batsman') or data.get('striker') or ''
+            # cricbuzz sometimes nests batsman as object
+            batsman = (data.get('batsman') if isinstance(data.get('batsman'), str) else (data.get('batsman', {}).get('name') if isinstance(data.get('batsman'), dict) else data.get('striker') or ''))
             non_striker = data.get('non_striker') or data.get('nonStriker') or ''
-            bowler = data.get('bowler') or data.get('bowling') or ''
+            bowler = (data.get('bowler') if isinstance(data.get('bowler'), str) else (data.get('bowler', {}).get('name') if isinstance(data.get('bowler'), dict) else ''))
             runs = int(data.get('runs', 0))
             extras = int(data.get('extras', 0))
             is_wicket = bool(data.get('is_wicket', data.get('wicket', False)))
