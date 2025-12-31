@@ -12,10 +12,10 @@ class CricbuzzAdapter(LiveFeedAdapter):
     - LIVE_CRICBUZZ_URL: endpoint returning JSON {events: [...]}
     - poll_interval (seconds)
     - jitter (seconds)
-    - CRICBUZZ_USER_AGENT: custom user agent
+    - user_agents: list for rotating User-Agents
 
     NOTE: Scraping Cricbuzz directly may violate Terms of Service. Prefer an approved API or a local
-    instance of ekamid/cricbuzz-live you control. The adapter uses a User-Agent header and randomized
+    instance of ekamid/cricbuzz-live you control. The adapter uses a rotating User-Agent header and randomized
     jitter between polls to reduce scraping impact.
     """
 
@@ -24,8 +24,8 @@ class CricbuzzAdapter(LiveFeedAdapter):
         self.url = config.get('url') if config and 'url' in config else os.getenv('LIVE_CRICBUZZ_URL')
         if not self.url:
             raise ValueError('CricbuzzAdapter requires LIVE_CRICBUZZ_URL in config or env')
-        # Allow overriding user agent via env
-        self.user_agent = os.getenv('CRICBUZZ_USER_AGENT', self.user_agent)
+        if 'user_agents' in (config or {}):
+            self.user_agents = config.get('user_agents')
 
     def capabilities(self):
         return {'live': True, 'ball_by_ball': True}
@@ -35,6 +35,7 @@ class CricbuzzAdapter(LiveFeedAdapter):
             self._running = True
             while self._running:
                 try:
+                    self._pick_user_agent()
                     headers = {'User-Agent': self.user_agent}
                     r = await client.get(self.url, headers=headers)
                     if r.status_code == 200:
@@ -48,15 +49,21 @@ class CricbuzzAdapter(LiveFeedAdapter):
                                     if evt:
                                         self._validate_and_emit(evt)
                                 except Exception as e:
-                                    print('cricbuzz_adapter on_event error', e)
+                                    LOG.exception('cricbuzz_adapter on_event error: %s', e)
+                            self.mark_healthy()
                         else:
-                            # Non-JSON responses (HTML) are ignored by default to avoid scraping complexity
-                            print('cricbuzz_adapter: non-json response, skipping')
+                            LOG.warning('cricbuzz_adapter: non-json response, skipping')
+                            self.mark_unhealthy()
                     else:
-                        print('cricbuzz_adapter: bad status', r.status_code)
+                        LOG.warning('cricbuzz_adapter: bad status %s', r.status_code)
+                        self.mark_unhealthy()
                 except Exception as e:
-                    print('cricbuzz_adapter error', e)
+                    LOG.exception('cricbuzz_adapter error: %s', e)
+                    self.mark_unhealthy()
                 await self._sleep_with_jitter()
+
+    def stop(self):
+        self._running = False
 
     def on_event(self, data: dict) -> Optional[dict]:
         # Map likely keys from cricbuzz/ekamid feed into our Event schema
@@ -93,5 +100,5 @@ class CricbuzzAdapter(LiveFeedAdapter):
                 'notes': notes,
             }
         except Exception as e:
-            print('cricbuzz_adapter normalize error', e)
+            LOG.exception('cricbuzz_adapter normalize error: %s', e)
             return None

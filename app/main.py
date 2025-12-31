@@ -1,6 +1,8 @@
 import os
 import asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, BackgroundTasks
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, BackgroundTasks, Response
+import logging
+LOG = logging.getLogger(__name__)
 from pydantic import BaseModel
 from .models import Event
 from .engine import MatchStateManager
@@ -86,6 +88,37 @@ async def adapters_status():
     if not adapter_manager:
         return {'error': 'adapter manager not started'}
     return adapter_manager.get_status()
+
+# Health endpoint: returns 200 if primary adapters are healthy
+@app.get('/health')
+async def health():
+    primary = [p.strip().lower() for p in os.getenv('LIVE_FEED_PRIMARY_PROVIDERS', 'cricbuzz,cricketapi,msn').split(',')]
+    if not adapter_manager:
+        return {'status': 'adapter manager not started'}, 500
+    status = adapter_manager.get_status()
+    # Map adapter class names lowercased for lookup
+    mapping = {name.lower(): info for name, info in status.items()}
+    unhealthy = []
+    for p in primary:
+        # find adapter whose name contains provider name
+        found = False
+        for name, info in status.items():
+            if p in name.lower():
+                found = True
+                if not info.get('healthy'):
+                    unhealthy.append(name)
+        if not found:
+            unhealthy.append(p + ' (not registered)')
+    if unhealthy:
+        return {'status': 'unhealthy', 'unhealthy': unhealthy}, 500
+    return {'status': 'ok'}
+
+# Prometheus metrics endpoint
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+
+@app.get('/metrics')
+async def metrics_endpoint():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 async def _post_event(event_dict: dict):
     # convert and call ingest_event

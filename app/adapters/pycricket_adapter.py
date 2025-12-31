@@ -18,6 +18,7 @@ class PyCricketAdapter(LiveFeedAdapter):
 
     def __init__(self, callback, config: Optional[dict] = None, poll_interval: int = 60):
         super().__init__(callback, config=config, poll_interval=poll_interval)
+        self._running = False
 
     def capabilities(self):
         return {'utilities': True, 'parsing': True, 'derived_stats': True}
@@ -28,6 +29,9 @@ class PyCricketAdapter(LiveFeedAdapter):
         self._running = True
         while self._running:
             await self._sleep_with_jitter()
+
+    def stop(self):
+        self._running = False
 
     def on_event(self, data: dict) -> Optional[dict]:
         # If pycricket is present, attempt to parse and enrich
@@ -44,5 +48,5 @@ class PyCricketAdapter(LiveFeedAdapter):
             # If library doesn't have parse_ball, just return None
             return None
         except Exception as e:
-            print('pycricket_adapter error', e)
+            LOG.exception('pycricket_adapter error: %s', e)
             return None

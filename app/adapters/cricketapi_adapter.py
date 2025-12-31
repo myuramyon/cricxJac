@@ -34,6 +34,8 @@ class CricketAPIAdapter(LiveFeedAdapter):
                     headers = {}
                     if self.api_key:
                         headers['Authorization'] = f"Bearer {self.api_key}"
+                    self._pick_user_agent()
+                    headers['User-Agent'] = self.user_agent
                     r = await client.get(url, headers=headers)
                     if r.status_code == 200:
                         payload = r.json()
@@ -44,12 +46,18 @@ class CricketAPIAdapter(LiveFeedAdapter):
                                 if evt:
                                     self._validate_and_emit(evt)
                             except Exception as ee:
-                                print('cricketapi_adapter event error', ee)
+                                LOG.exception('cricketapi_adapter event error: %s', ee)
+                        self.mark_healthy()
                     else:
-                        print('cricketapi_adapter bad status', r.status_code)
+                        LOG.warning('cricketapi_adapter bad status %s', r.status_code)
+                        self.mark_unhealthy()
                 except Exception as e:
-                    print('cricketapi_adapter error', e)
+                    LOG.exception('cricketapi_adapter error: %s', e)
+                    self.mark_unhealthy()
                 await self._sleep_with_jitter()
+
+    def stop(self):
+        self._running = False
 
     def on_event(self, data: dict) -> Optional[dict]:
         # Normalize provider event to our Event schema when ball-by-ball info exists
@@ -88,5 +96,5 @@ class CricketAPIAdapter(LiveFeedAdapter):
                 'notes': data.get('note') or None,
             }
         except Exception as e:
-            print('cricketapi_adapter normalize error', e)
+            LOG.exception('cricketapi_adapter normalize error: %s', e)
             return None

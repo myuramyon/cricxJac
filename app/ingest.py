@@ -13,8 +13,11 @@ class SampleFileAdapter(LiveFeedAdapter):
     async def start(self):
         if not os.path.exists(self.path):
             return
+        self._running = True
         with open(self.path) as fh:
             for line in fh:
+                if not self._running:
+                    break
                 line = line.strip()
                 if not line:
                     continue
@@ -23,6 +26,9 @@ class SampleFileAdapter(LiveFeedAdapter):
                 if evt:
                     self._validate_and_emit(evt)
                 await asyncio.sleep(self.delay)
+
+    def stop(self):
+        self._running = False
 
     def on_event(self, data: dict) -> dict:
         # sample file already contains events matching our schema; return as-is
@@ -43,7 +49,8 @@ class ProviderAdapter(LiveFeedAdapter):
         url = self.cfg.get('url') or os.getenv('LIVE_FEED_URL')
         interval = float(self.cfg.get('interval', self.poll_interval))
         async with httpx.AsyncClient() as client:
-            while True:
+            self._running = True
+            while self._running:
                 try:
                     r = await client.get(url, headers={'User-Agent': self.user_agent})
                     if r.status_code == 200:
@@ -55,3 +62,6 @@ class ProviderAdapter(LiveFeedAdapter):
                 except Exception as e:
                     print('ProviderAdapter error', e)
                 await asyncio.sleep(interval)
+
+    def stop(self):
+        self._running = False

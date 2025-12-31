@@ -31,7 +31,8 @@ class IPLAdapter(LiveFeedAdapter):
             self._running = True
             while self._running:
                 try:
-                    r = await client.get(self.base_url)
+                    self._pick_user_agent()
+                    r = await client.get(self.base_url, headers={'User-Agent': self.user_agent})
                     if r.status_code == 200:
                         payload = r.json()
                         # If provider contains events, emit them; else skip
@@ -39,11 +40,17 @@ class IPLAdapter(LiveFeedAdapter):
                             evt = self.on_event(item)
                             if evt:
                                 self._validate_and_emit(evt)
+                        self.mark_healthy()
                     else:
-                        print('ipl_adapter bad status', r.status_code)
+                        LOG.warning('ipl_adapter bad status %s', r.status_code)
+                        self.mark_unhealthy()
                 except Exception as e:
-                    print('ipl_adapter error', e)
+                    LOG.exception('ipl_adapter error: %s', e)
+                    self.mark_unhealthy()
                 await self._sleep_with_jitter()
+
+    def stop(self):
+        self._running = False
 
     def on_event(self, data: dict) -> Optional[dict]:
         # If event is ball-by-ball, normalize; else skip emit
@@ -66,7 +73,7 @@ class IPLAdapter(LiveFeedAdapter):
                     'notes': data.get('note')
                 }
             except Exception as e:
-                print('ipl_adapter normalize error', e)
+                LOG.exception('ipl_adapter normalize error: %s', e)
                 return None
         # Not a ball event; skip for Event emission
         return None

@@ -6,3 +6,5 @@ pytest
 python-dotenv
 redis
 aioredis
+prometheus_client
+beautifulsoup4
