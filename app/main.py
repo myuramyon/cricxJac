@@ -64,18 +64,28 @@ async def ws_endpoint(websocket: WebSocket, match_id: str):
         conn_mgr.disconnect(match_id, websocket)
 
 # background feed starter
+# Adapter manager: supervise adapters and expose status
+adapter_manager = None
+
 @app.on_event('startup')
 async def startup_event():
     # Load adapters configured by LIVE_FEED_PROVIDERS (comma-separated)
     from app.adapters.loader import load_adapters
+    from app.adapters.manager import AdapterManager
+    global adapter_manager
     cb = lambda e: asyncio.create_task(_post_event(e))
     adapters = load_adapters(cb)
+    adapter_manager = AdapterManager(adapters)
+    # run manager in background
+    asyncio.create_task(adapter_manager.start())
     for adapter in adapters:
-        try:
-            asyncio.create_task(adapter.start())
-            print(f"Started adapter: {adapter.__class__.__name__}")
-        except Exception as e:
-            print('Error starting adapter', adapter, e)
+        print(f"Registered adapter: {adapter.__class__.__name__}")
+
+@app.get('/adapters/status')
+async def adapters_status():
+    if not adapter_manager:
+        return {'error': 'adapter manager not started'}
+    return adapter_manager.get_status()
 
 async def _post_event(event_dict: dict):
     # convert and call ingest_event
