@@ -19,10 +19,17 @@ class SampleFileAdapter(LiveFeedAdapter):
                 if not line:
                     continue
                 data = json.loads(line)
-                evt = self.on_event(data) if hasattr(self, 'on_event') else data
+                evt = self.on_event(data)
                 if evt:
                     self._validate_and_emit(evt)
                 await asyncio.sleep(self.delay)
+
+    def on_event(self, data: dict) -> dict:
+        # sample file already contains events matching our schema; return as-is
+        return data
+
+    def capabilities(self):
+        return {'sample': True, 'live': False}
 
 # placeholder for generic provider adapter — uses LiveFeedAdapter contract
 class ProviderAdapter(LiveFeedAdapter):

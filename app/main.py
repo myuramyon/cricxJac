@@ -66,14 +66,16 @@ async def ws_endpoint(websocket: WebSocket, match_id: str):
 # background feed starter
 @app.on_event('startup')
 async def startup_event():
-    provider = os.getenv('LIVE_FEED_PROVIDER', 'sample')
-    if provider == 'sample':
-        path = os.getenv('SAMPLE_FEED_PATH', 'samples/sample_feed.jsonl')
-        adapter = SampleFileAdapter(callback=lambda e: asyncio.create_task(_post_event(e)), path=path, delay=float(os.getenv('LIVE_FEED_POLL_INTERVAL', '1.0')))
-    else:
-        cfg = {'url': os.getenv('LIVE_FEED_URL')}
-        adapter = ProviderAdapter(callback=lambda e: asyncio.create_task(_post_event(e)), provider_cfg=cfg)
-    asyncio.create_task(adapter.start())
+    # Load adapters configured by LIVE_FEED_PROVIDERS (comma-separated)
+    from app.adapters.loader import load_adapters
+    cb = lambda e: asyncio.create_task(_post_event(e))
+    adapters = load_adapters(cb)
+    for adapter in adapters:
+        try:
+            asyncio.create_task(adapter.start())
+            print(f"Started adapter: {adapter.__class__.__name__}")
+        except Exception as e:
+            print('Error starting adapter', adapter, e)
 
 async def _post_event(event_dict: dict):
     # convert and call ingest_event
