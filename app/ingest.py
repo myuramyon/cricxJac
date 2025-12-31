@@ -2,18 +2,11 @@ import asyncio
 import json
 import os
 from typing import Callable
-
-class LiveFeedAdapter:
-    """Base adapter interface. Implement `start` to push events to the callback.`"""
-    def __init__(self, callback: Callable[[dict], None]):
-        self.callback = callback
-
-    async def start(self):
-        raise NotImplementedError
+from app.adapters.base import LiveFeedAdapter
 
 class SampleFileAdapter(LiveFeedAdapter):
     def __init__(self, callback: Callable[[dict], None], path: str, delay: float = 1.0):
-        super().__init__(callback)
+        super().__init__(callback, config={'poll_interval': delay})
         self.path = path
         self.delay = delay
 
@@ -26,25 +19,32 @@ class SampleFileAdapter(LiveFeedAdapter):
                 if not line:
                     continue
                 data = json.loads(line)
-                self.callback(data)
+                evt = self.on_event(data) if hasattr(self, 'on_event') else data
+                if evt:
+                    self._validate_and_emit(evt)
                 await asyncio.sleep(self.delay)
 
-# placeholder for provider adapter
+# placeholder for generic provider adapter — uses LiveFeedAdapter contract
 class ProviderAdapter(LiveFeedAdapter):
     def __init__(self, callback: Callable[[dict], None], provider_cfg: dict):
-        super().__init__(callback)
+        super().__init__(callback, config=provider_cfg)
         self.cfg = provider_cfg
 
     async def start(self):
         # Example: poll provider endpoint and call callback on new events
         import httpx
-        url = self.cfg.get('url')
-        interval = float(self.cfg.get('interval', 2.0))
+        url = self.cfg.get('url') or os.getenv('LIVE_FEED_URL')
+        interval = float(self.cfg.get('interval', self.poll_interval))
         async with httpx.AsyncClient() as client:
             while True:
-                r = await client.get(url)
-                if r.status_code == 200:
-                    payload = r.json()
-                    for e in payload.get('events', []):
-                        self.callback(e)
+                try:
+                    r = await client.get(url, headers={'User-Agent': self.user_agent})
+                    if r.status_code == 200:
+                        payload = r.json()
+                        for e in payload.get('events', []):
+                            evt = self.on_event(e) if hasattr(self, 'on_event') else e
+                            if evt:
+                                self._validate_and_emit(evt)
+                except Exception as e:
+                    print('ProviderAdapter error', e)
                 await asyncio.sleep(interval)
