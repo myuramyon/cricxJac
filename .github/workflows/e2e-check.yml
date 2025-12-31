@@ -1,0 +1,41 @@
+name: e2e-check
+
+on:
+  push:
+    branches: [ main, feat/scaffold-fastapi ]
+  pull_request:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Start app
+        env:
+          LIVE_FEED_PROVIDERS: sample
+          LIVE_FEED_PRIMARY_PROVIDERS: sample
+          SAMPLE_FEED_PATH: samples/sample_feed.jsonl
+          LIVE_FEED_POLL_INTERVAL: '0.1'
+        run: |
+          # run uvicorn in background
+          uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          sleep 1
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000/health || true)
+            echo "health status: $status"
+            if [ "$status" = "200" ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Health check failed"; exit 1

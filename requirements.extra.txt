@@ -1,0 +1,10 @@
+# Optional provider integrations & utility libraries
+# Note: ekamid/cricbuzz-live is a Node.js project (cannot pip install). Prefer running it separately
+# Python packages (if providers are python-based or lib available):
+# pip install git+https://github.com/sanwebinfo/cricket-api.git
+# pip install git+https://github.com/cu-sanjay/IPL-2025.git
+# pip install git+https://github.com/roanuz/py-cricket.git
+
+# Helpful Python libs for scraping/parsing & safety
+beautifulsoup4
+python-dateutil

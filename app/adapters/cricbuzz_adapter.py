@@ -1,0 +1,134 @@
+import os
+import asyncio
+import random
+from typing import Optional
+import httpx
+from .base import LiveFeedAdapter
+
+class CricbuzzAdapter(LiveFeedAdapter):
+    """Adapter that polls a Cricbuzz-compatible live endpoint (or a local ekamid/cricbuzz-live service).
+
+    Config options (env or config dict):
+    - LIVE_CRICBUZZ_URL: endpoint returning JSON {events: [...]}
+    - poll_interval (seconds)
+    - jitter (seconds)
+    - user_agents: list for rotating User-Agents
+
+    NOTE: Scraping Cricbuzz directly may violate Terms of Service. Prefer an approved API or a local
+    instance of ekamid/cricbuzz-live you control. The adapter uses a rotating User-Agent header and randomized
+    jitter between polls to reduce scraping impact.
+    """
+
+    def __init__(self, callback, config: Optional[dict] = None, poll_interval: int = 60):
+        super().__init__(callback, config=config, poll_interval=poll_interval)
+        self.url = config.get('url') if config and 'url' in config else os.getenv('LIVE_CRICBUZZ_URL')
+        if not self.url:
+            raise ValueError('CricbuzzAdapter requires LIVE_CRICBUZZ_URL in config or env')
+        if 'user_agents' in (config or {}):
+            self.user_agents = config.get('user_agents')
+
+    def capabilities(self):
+        return {'live': True, 'ball_by_ball': True}
+
+    async def start(self):
+        async with httpx.AsyncClient(timeout=30) as client:
+            self._running = True
+            while self._running:
+                try:
+                    self._pick_user_agent()
+                    headers = {'User-Agent': self.user_agent}
+                    r = await client.get(self.url, headers=headers)
+                    if r.status_code == 200:
+                        ct = r.headers.get('content-type', '')
+                        if 'application/json' in ct:
+                            payload = r.json()
+                            events = payload.get('events') or payload.get('data') or payload.get('matches') or []
+                            for raw in events:
+                                try:
+                                    evt = self.on_event(raw)
+                                    if evt:
+                                        self._validate_and_emit(evt)
+                                except Exception as e:
+                                    LOG.exception('cricbuzz_adapter on_event error: %s', e)
+                            self.mark_healthy()
+                        else:
+                            # HTML response: attempt extraction if allowed
+                            allow_scrape = bool(self.config.get('allow_scrape', os.getenv('ALLOW_SCRAPE_CRICBUZZ', 'false').lower() in ('1','true','yes')))
+                            if not allow_scrape:
+                                LOG.warning('cricbuzz_adapter received HTML but scraping disabled; set ALLOW_SCRAPE_CRICBUZZ to enable')
+                                self.mark_unhealthy()
+                                await self._sleep_with_jitter()
+                                continue
+                            # attempt to extract JSON from script tags
+                            # Use helper to extract JSON blobs from HTML
+                            # Use helper to extract JSON blobs from HTML
+                            from .cricbuzz_adapter_helpers import extract_json_from_html
+                            snippets = extract_json_from_html(r.text)
+                            events = []
+                            for s in snippets:
+                                if isinstance(s, dict) and s.get('events'):
+                                    events.extend(s.get('events'))
+                                elif isinstance(s, list):
+                                    events.extend(s)
+                            # fallback parse for simple HTML
+                            if not events:
+                                LOG.warning('cricbuzz_adapter: no events found in HTML after extraction')
+                                self.mark_unhealthy()
+                            else:
+                                for raw in events:
+                                    try:
+                                        evt = self.on_event(raw)
+                                        if evt:
+                                            self._validate_and_emit(evt)
+                                    except Exception as e:
+                                        LOG.exception('cricbuzz_adapter on_event error: %s', e)
+                                self.mark_healthy()
+                    else:
+                        LOG.warning('cricbuzz_adapter: bad status %s', r.status_code)
+                        self.mark_unhealthy()
+                except Exception as e:
+                    LOG.exception('cricbuzz_adapter error: %s', e)
+                    self.mark_unhealthy()
+                await self._sleep_with_jitter()
+
+    def stop(self):
+        self._running = False
+
+    def on_event(self, data: dict) -> Optional[dict]:
+        # Map likely keys from cricbuzz/ekamid feed into our Event schema
+        try:
+            match_id = data.get('match_id') or data.get('mid') or data.get('match') or data.get('match_id_str')
+            timestamp = data.get('timestamp') or data.get('time') or data.get('utc')
+            inning = int(data.get('inning', data.get('inning_number', 1)))
+            over = int(data.get('over', data.get('over_num', 0)))
+            ball = int(data.get('ball', data.get('ball_num', 1)))
+            # cricbuzz sometimes nests batsman as object
+            batsman = (data.get('batsman') if isinstance(data.get('batsman'), str) else (data.get('batsman', {}).get('name') if isinstance(data.get('batsman'), dict) else data.get('striker') or ''))
+            non_striker = data.get('non_striker') or data.get('nonStriker') or ''
+            bowler = (data.get('bowler') if isinstance(data.get('bowler'), str) else (data.get('bowler', {}).get('name') if isinstance(data.get('bowler'), dict) else ''))
+            runs = int(data.get('runs', 0))
+            extras = int(data.get('extras', 0))
+            is_wicket = bool(data.get('is_wicket', data.get('wicket', False)))
+            wicket_type = data.get('wicket_type') or data.get('how')
+            wicket_player = data.get('wicket_player') or data.get('player_out')
+            notes = data.get('note') or data.get('desc')
+
+            return {
+                'match_id': str(match_id),
+                'timestamp': timestamp,
+                'inning': inning,
+                'over': over,
+                'ball': ball,
+                'batsman': batsman,
+                'non_striker': non_striker,
+                'bowler': bowler,
+                'runs': runs,
+                'extras': extras,
+                'is_wicket': is_wicket,
+                'wicket_type': wicket_type,
+                'wicket_player': wicket_player,
+                'notes': notes,
+            }
+        except Exception as e:
+            LOG.exception('cricbuzz_adapter normalize error: %s', e)
+            return None

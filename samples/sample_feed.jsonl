@@ -1,0 +1,5 @@
+{"match_id":"M1","timestamp":"2025-12-31T10:00:00Z","inning":1,"over":0,"ball":1,"batsman":"A","non_striker":"B","bowler":"X","runs":0,"extras":0,"is_wicket":false}
+{"match_id":"M1","timestamp":"2025-12-31T10:00:10Z","inning":1,"over":0,"ball":2,"batsman":"A","non_striker":"B","bowler":"X","runs":4,"extras":0,"is_wicket":false}
+{"match_id":"M1","timestamp":"2025-12-31T10:00:20Z","inning":1,"over":0,"ball":3,"batsman":"A","non_striker":"B","bowler":"X","runs":1,"extras":0,"is_wicket":false}
+{"match_id":"M1","timestamp":"2025-12-31T10:00:30Z","inning":1,"over":0,"ball":4,"batsman":"B","non_striker":"A","bowler":"X","runs":0,"extras":0,"is_wicket":true,"wicket_type":"bowled","wicket_player":"B"}
+{"match_id":"M1","timestamp":"2025-12-31T10:00:40Z","inning":1,"over":0,"ball":5,"batsman":"C","non_striker":"A","bowler":"X","runs":6,"extras":0,"is_wicket":false}
